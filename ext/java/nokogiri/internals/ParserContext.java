@@ -39,6 +39,8 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.FilterInputStream;
+import java.io.PushbackInputStream;
 import java.io.StringReader;
 import java.net.URI;
 import java.nio.charset.Charset;
@@ -58,6 +60,9 @@ import org.jruby.util.ByteList;
 import org.jruby.util.TypeConverter;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
+
+import java.util.zip.GZIPInputStream;
+
 
 /**
  * Base class for the various parser contexts.  Handles converting
@@ -84,42 +89,57 @@ public class ParserContext extends RubyObject {
         return source;
     }
 
+    public InputStream decompressStream(InputStream input) throws IOException {
+        PushbackInputStream pbis = new PushbackInputStream(input, 2); //we need a pushbackstream to look ahead
+        byte[] signature = new byte[2];
+        pbis.read(signature);
+        pbis.unread(signature);
+        if (signature[0] == (byte) 0x1f && signature[1] == (byte) 0x8b) //check if matches standard gzip maguc number
+            return new GZIPInputStream(pbis);
+        else
+            return pbis;
+    }
+
     /**
      * Set the InputSource from <code>url</code> or <code>data</code>,
      * which may be an IO object, a String, or a StringIO.
      */
     public void setInputSource(ThreadContext context, IRubyObject data, IRubyObject url) {
         source = new InputSource();
-
         Ruby ruby = context.getRuntime();
-
         ParserContext.setUrl(context, source, url);
 
         // if setEncoding returned true, then the stream is set
         // to the EncodingReaderInputStream
         if (setEncoding(context, data))
-          return;
+            return;
 
         RubyString stringData = null;
         if (invoke(context, data, "respond_to?",
-                   ruby.newSymbol("to_io").to_sym()).isTrue()) {
+                ruby.newSymbol("to_io").to_sym()).isTrue()) {
             /* IO or other object that responds to :to_io */
             RubyIO io =
-                (RubyIO) TypeConverter.convertToType(data,
-                                                     ruby.getIO(),
-                                                     "to_io");
+                    (RubyIO) TypeConverter.convertToType(data,
+                            ruby.getIO(),
+                            "to_io");
             // use unclosedable input stream to fix #495
-            source.setByteStream(new UncloseableInputStream(io.getInStream()));
+            try {
+                InputStream inputStream = new UncloseableInputStream(io.getInStream());
+                source.setByteStream(decompressStream(inputStream));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            //source.setByteStream(new UncloseableInputStream(io.getInStream()));
         } else {
             if (invoke(context, data, "respond_to?",
-                          ruby.newSymbol("string").to_sym()).isTrue()) {
+                    ruby.newSymbol("string").to_sym()).isTrue()) {
                 /* StringIO or other object that responds to :string */
                 stringData = invoke(context, data, "string").convertToString();
             } else if (data instanceof RubyString) {
                 stringData = (RubyString) data;
             } else {
                 throw ruby.newArgumentError(
-                    "must be kind_of String or respond to :to_io or :string");
+                        "must be kind_of String or respond to :to_io or :string");
             }
         }
         if (stringData != null) {
@@ -152,25 +172,25 @@ public class ParserContext extends RubyObject {
         String path = rubyStringToString(url);
         // Dir.chdir might be called at some point before this.
         if (path != null) {
-          try {
-            URI uri = URI.create(path);
-            source.setSystemId(uri.toURL().toString());
-          } catch (Exception ex) {
-            // fallback to the old behavior
-            File file = new File(path);
-            if (file.isAbsolute()) {
-              source.setSystemId(path);
-            } else {
-              String pwd = context.getRuntime().getCurrentDirectory();
-              String absolutePath;
-              try {
-                absolutePath = new File(pwd, path).getCanonicalPath();
-              } catch (IOException e) {
-                absolutePath = new File(pwd, path).getAbsolutePath();
-              }
-              source.setSystemId(absolutePath);
+            try {
+                URI uri = URI.create(path);
+                source.setSystemId(uri.toURL().toString());
+            } catch (Exception ex) {
+                // fallback to the old behavior
+                File file = new File(path);
+                if (file.isAbsolute()) {
+                    source.setSystemId(path);
+                } else {
+                    String pwd = context.getRuntime().getCurrentDirectory();
+                    String absolutePath;
+                    try {
+                        absolutePath = new File(pwd, path).getCanonicalPath();
+                    } catch (IOException e) {
+                        absolutePath = new File(pwd, path).getAbsolutePath();
+                    }
+                    source.setSystemId(absolutePath);
+                }
             }
-          }
         }
     }
 
@@ -181,9 +201,9 @@ public class ParserContext extends RubyObject {
             NokogiriEncodingReaderWrapper reader = new NokogiriEncodingReaderWrapper(context, (RubyObject) data);
             source.setByteStream(reader);
             // data is EnocodingReader
-            if(reader.detectEncoding()) {
-              detected_encoding = reader.getEncoding();
-              source.setEncoding(detected_encoding.asJavaString());
+            if (reader.detectEncoding()) {
+                detected_encoding = reader.getEncoding();
+                source.setEncoding(detected_encoding.asJavaString());
             }
             return true;
         }
@@ -273,6 +293,7 @@ public class ParserContext extends RubyObject {
 
     public static class NokogiriXInlcudeEntityResolver implements org.xml.sax.EntityResolver {
         InputSource source;
+
         public NokogiriXInlcudeEntityResolver(InputSource source) {
             this.source = source;
         }

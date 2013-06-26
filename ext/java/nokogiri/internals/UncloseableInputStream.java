@@ -41,7 +41,7 @@ import java.io.InputStream;
  *
  * @author John Shahid <jvshahid@gmail.com>
  */
-public class UncloseableInputStream extends InputStream {
+public class UncloseableInputStream extends PushbackInputStream {
   private final InputStream delegate;
 
   /**
